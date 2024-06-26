@@ -1,0 +1,17 @@
+{
+    "files.associations": {
+        "os.h": "c",
+        "platform.h": "c",
+        "graphprint.h": "c",
+        "types.h": "c",
+        "task.h": "c",
+        "riscv.h": "c",
+        "uart.h": "c",
+        "plic.h": "c",
+        "goish.h": "c",
+        "timer.h": "c",
+        "printf.h": "c",
+        "mutex.h": "c",
+        "user.h": "c"
+    }
+}
