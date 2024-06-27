@@ -775,12 +775,12 @@ serial   00000003 IO stdin stdout stderr
 nulldev  00000003 IO 
 ```
 
-uboot其实是拥有读写sd卡的能力的。所以我的planA（致敬姜圣）是将内核的elf文件放在sd卡里，然后直接运行。但吊诡的是我无论怎么研究，都无法正常读取sd卡。于是我就放弃了这个方案。
+uboot其实是拥有读写sd卡的能力的。所以我的planA是将内核的elf文件放在sd卡里，然后直接运行。但吊诡的是我无论怎么研究，都无法正常读取sd卡。于是我就放弃了这个方案。
 
 在输入help指令后，我发现uboot有 `tftp`指令，也就是说他可以通过网络，把其他地方的elf文件读到内存的某个位置（默认0xc0100000），然后通过 `bootelf`指令执行某个位置的elf文件（也是默认0xc0100000）。为了实现这个方案，我需要在电脑上构建一个tftp服务器，把 `make`生成的elf文件放到tftp服务器的目录下。这样uboot的 `tftp`命令就可以获取到电脑上的elf文件了。但是不知道为什么，我在linux上搭建的服务器uboot无法访问。于是我最终搭载了windows上。具体流程如下
 
-- windows下构建tftp服务器需要下载一个软件[tftpd64](https://pjo2.github.io/tftpd64/),并按照下图配置。`Current Directory`随便选，就是之后把elf文件拷贝近来的文件夹；`Server interfaces`选择的时候需要注意：要选择能和板卡在同一个网段下的网卡。然后这个窗口挂着就行，这就代表windows开启了这个服务。  
-- ![tftpd64](/mdpic/4.jpg)
+- windows下构建tftp服务器需要下载一个软件[tftpd64](https://pjo2.github.io/tftpd64/),并按照下图配置。`Current Directory`随便选，就是之后把elf文件拷贝近来的文件夹；`Server interfaces`选择的时候需要注意：要选择能和板卡在同一个网段下的网卡。然后这个窗口挂着就行，这就代表windows开启了这个服务。    
+![tftpd64](/mdpic/4.jpg)
 - 将虚拟机中 `make`生成的 `01/out/GROL.elf`文件拷贝到上一部的 `Current Directory`中。
 - 进入uboot，输入 `tftp GROL.elf`,内核可执行文件就被暂存到 `0xc0100000`中了。这时候uboot窗口会打印如下。
   ```
