@@ -779,7 +779,8 @@ uboot其实是拥有读写sd卡的能力的。所以我的planA（致敬姜圣�
 
 在输入help指令后，我发现uboot有 `tftp`指令，也就是说他可以通过网络，把其他地方的elf文件读到内存的某个位置（默认0xc0100000），然后通过 `bootelf`指令执行某个位置的elf文件（也是默认0xc0100000）。为了实现这个方案，我需要在电脑上构建一个tftp服务器，把 `make`生成的elf文件放到tftp服务器的目录下。这样uboot的 `tftp`命令就可以获取到电脑上的elf文件了。但是不知道为什么，我在linux上搭建的服务器uboot无法访问。于是我最终搭载了windows上。具体流程如下
 
-- windows下构建tftp服务器需要下载一个软件[tftpd64](https://pjo2.github.io/tftpd64/),并按照下图配置。`Current Directory`随便选，就是之后把elf文件拷贝近来的文件夹；`Server interfaces`选择的时候需要注意：要选择能和板卡在同一个网段下的网卡。然后这个窗口挂着就行，这就代表windows开启了这个服务。![tftpd64](/mdpic/4.jpg)
+- windows下构建tftp服务器需要下载一个软件[tftpd64](https://pjo2.github.io/tftpd64/),并按照下图配置。`Current Directory`随便选，就是之后把elf文件拷贝近来的文件夹；`Server interfaces`选择的时候需要注意：要选择能和板卡在同一个网段下的网卡。然后这个窗口挂着就行，这就代表windows开启了这个服务。  
+- ![tftpd64](/mdpic/4.jpg)
 - 将虚拟机中 `make`生成的 `01/out/GROL.elf`文件拷贝到上一部的 `Current Directory`中。
 - 进入uboot，输入 `tftp GROL.elf`,内核可执行文件就被暂存到 `0xc0100000`中了。这时候uboot窗口会打印如下。
   ```
@@ -875,7 +876,8 @@ endif
 | 未初始化数据段 |  `.bss`  | 放未被初始化的全局变量的地方 |
 
 我们可以进入LicheePi的Linux内核，通过 `cat /proc/iomem`指令，查看内核在内存中的分布。（这里也可以看出串口等外设的 `base_address`）
-![iomem](/mdpic/6.jpg)
+  
+  ![iomem](/mdpic/6.jpg)
 
 可以看到，内核被加载到了 `0x002_00000`，一直到 `0xffff_ffff`一共大概4.2G的空间都是给内核用的。bss之后很大的一段空间就是给堆和栈的。
 
@@ -1332,7 +1334,8 @@ interrupt信号，经过仲裁后，引一根interrupt线链上CPU的中断口�
 这张表很长，我们只挑选需要的信息：
 编号|中断来源|说明
 :--:|:--:|:--:
-20|int_uart0|UART0中断
+20|int_uart0|UART0中断  
+
 但这还不够！仔细看第18页有句话：
 ```
 注意
@@ -1775,3 +1778,5 @@ void task2(){
 我没有用信号量来实现。我实现的方式很草率：一旦有锁的释放，我就切换任务。同样，一旦没有获取到锁，我也切换人物。这样的操作虽然能够满足 **有限等待要求**，但是当任务频繁的调用锁，且每次很快就还锁时，这个人物就跑不满一个相对公平的时间。不过我们对每个任务的公平性还没有很高的要求。就这样吧。
 
 同样的，这一章内容也没有升级UI。跑的时候用make凑合着就行。
+
+**TODO... 汪老师课程之后的内容**
