@@ -12,6 +12,9 @@
         "timer.h": "c",
         "printf.h": "c",
         "mutex.h": "c",
-        "user.h": "c"
+        "user.h": "c",
+        "swtimer.h": "c",
+        "random": "c",
+        "semaphore.h": "c"
     }
 }

@@ -85,6 +85,15 @@
   - [7.任务同步与锁](#7任务同步与锁)
     - [并发](#并发)
     - [锁](#锁)
+  - [8.软件定时器与系统调用](#8软件定时器与系统调用)
+    - [软件定时器和硬件定时器](#软件定时器和硬件定时器)
+    - [软件定时器的代码实现](#软件定时器的代码实现)
+    - [系统调用](#系统调用)
+      - [权限问题](#权限问题)
+      - [汇编中系统调用的代码实现](#汇编中系统调用的代码实现)
+      - [通过系统调用实现一些新的功能](#通过系统调用实现一些新的功能)
+        - [软件定时器的安全性问题（未完成）](#软件定时器的安全性问题未完成)
+        - [锁的优化](#锁的优化)
 
 # Glorious RISC-V On LicheePi - OS (GROL-OS)
 
@@ -108,6 +117,7 @@
 跟着[汪辰老师的慕课](https://www.bilibili.com/video/BV1Q5411w7z5/)走。
 
 2024.6.26第一次更新，到了第十四章同步任务和锁。
+2024.7.2 第二次更新，完成了汪老师的课程内容十六章
 
 ### 前置知识
 
@@ -1779,4 +1789,341 @@ void task2(){
 
 同样的，这一章内容也没有升级UI。跑的时候用make凑合着就行。
 
-**TODO... 汪老师课程之后的内容**
+## 8.软件定时器与系统调用
+### 软件定时器和硬件定时器
+什么是硬件计时器？我们可以查看[文档](/doc/玄铁曳影1520芯片原型系统用户手册_v1.0_cn.pdf)中的中断映射表。其中有`Timer1中断`的字样。这个就是硬件计时器。他是连在`PLIC`上的，通过外部中断实现的计时。这部分内容老师的可上没多讲。但我们可以想象到，这样的定时器数量是有限的，取决于硬件中`timer`的个数。但显然他的计时更加准确。
+
+之前我们讲述过定时器中断。定时器中断的核心是`mtime`寄存器，他一直在自增，同时和`CLINT`中的比较寄存器进行比较。我们可以在这个基础上构建软件定时器。他更加灵活，药用就可以构建一个。而且不需要额外的知识就可以编写，只需要熟练调用CLINT计时器就行。这部分可以看作一个代码编写的训练。在这部分我给自己定的目标是：自己写软件定时器，同时将抢占式多任务改成建立在软件定时器的基础上的。
+### 软件定时器的代码实现
+软件定时器的结构如下所示，定义在`/include/timer.h`中：
+```c
+struct swtimer{
+    void (*func)(void *arg);
+    void *arg;
+    uint32_t timeout_tick;
+    uint32_t period;
+    uint8_t flag;
+    //a tick equals to (1 / CLINT_SLICE_PER_SEC) second
+};
+```
+第一句话中的`func`函数就是软件定时器时间到了之后需要调用的函数。
+
+`timeout_tick`就是下一个触发软件定时器的时间点。
+
+`flag`表示这个定时器是一次性的还是周期性的。根据`flag`不同，`period`的含义也不同，分别代表多长时间后执行函数，或者执行函数的周期。
+
+在新建一个软件定时器之后，我们需要将这个结构体重的内容按照需要初始化。初始化函数在`src/timer.c`中，没什么好说的。
+```c
+struct swtimer *swtimer_create(
+    void (*handler)(void *arg),
+    void *arg,
+    uint32_t timeout,
+    uint8_t flag
+){
+    int avalible_timer;
+    for (avalible_timer=0; avalible_timer < MAX_SWTIMER; avalible_timer++)
+        if (SWTIMER_NOT_EXIST == _swtimer[avalible_timer].flag) break;
+    _swtimer[avalible_timer].func = handler;
+    _swtimer[avalible_timer].arg = arg;
+    _swtimer[avalible_timer].timeout_tick = timeout + _tick;
+    _swtimer[avalible_timer].flag = flag;
+	_swtimer[avalible_timer].period = timeout;
+	#ifndef myprint
+	printf("swtimer created.id=%d, current_tick=%d, next_tick=%d\n\r", avalible_timer, _tick, _swtimer[avalible_timer].timeout_tick);
+	#endif
+}
+```
+
+判断函数是否触发是放在定时器中断中的，每次产生定时器中断都需要检查`_tick`和`swtimer.timeout_tick`的值，然后执行函数，并且根据`flag`的值，删掉这个计时器，或者更新`timeout_tick`.
+```c
+void swtimer_check(){
+	for (int i=0; i < MAX_SWTIMER; i++){
+		if ((_swtimer[i].timeout_tick <= _tick) && (_swtimer[i].flag != SWTIMER_NOT_EXIST)){
+			#ifdef MYPRINT
+			printf("swtimer:id=0,current_tick=%d, timeouttick=%d\n\r",  _tick, _swtimer[0].timeout_tick);
+			#endif
+			if (_swtimer[i].flag == SWTIMER_DISPONSIBLE) _swtimer[i].flag = SWTIMER_NOT_EXIST;
+			_swtimer[i].timeout_tick = _swtimer[i].period + _tick;
+			w_mstatus_MPP(MSTATUS_MPP_MACHINE);
+			_swtimer[i].func(_swtimer[i].arg);
+		}
+	}
+}
+```
+
+这部分中我产生了一个疑问，那就是`func`函数是在`machine`权限调用的，但是却可以让用户编写。这样会不会产生安全问题？答案显然是会的。这部分内容我们放到系统调用部分去解决。因为到了系统调用那部分我们才会讲如何切换特权级。
+
+回顾一下我们一开始的目的：用软件定时器实现抢占式多任务。因此，我们在`task_controller`创建的时候，设置一个与他对应的软件计时器，他的创建函数如下：
+```c
+			_task_controller_timer = swtimer_create(schedule, 0, TICKS_PER_SLICE, SWTIMER_PERIODIC);
+```
+这个`schedule`函数就是一个`switch_to`函数，跳转到`task_controller`就行。这部分的内容很简单，就告一段落了。
+
+### 系统调用
+这部分内容的可玩性很高。结合系统调用，可以解决之前遇到的一系列问题。
+
+#### 权限问题
+我们之前提到过，riscv有三个权限级：M(machine), S(supervisor), U(user)。CPU上电之后工作在M权限级。随之而来的是两个问题：CPU如何实现权限级别的切换？U权限如何访问一些M权限的寄存器？这两个问题其实是同一个问题，因为user访问machine的状态寄存器的方式就是切换到machine权限，读取寄存器，再返回user权限的。而trap就是一种很直观的权限切换的方法。由此我们引入了系统调用。
+
+系统调用和软中断很像，都是user主动切换到machine去干一些活儿。但是软中断是中断，系统调用却是一种异常处理。可以参考[文档](/doc/玄铁C910用户手册.pdf)的表5-1异常和中断向量分配表，系统调用是8号异常，也叫做用户模式环境调用异常。既然是异常，`mepc`值就是发生异常的那行代码。因此我们需要手动给`mepc`值加上4.
+
+#### 汇编中系统调用的代码实现
+rv的汇编提供了两个指令来实现系统调用 `ecall` 和`eret` 。`ecall`可以参考`w_sip`指令，可以直接触发一个异常。系统调用的参数传递可以用寄存器来传递，也就是把需要传递的参数放在`a7`， 然后在`trap_handler`中通过上下文访问这两个寄存器的值，就可以实现参数传递了。相关代码节选如下图所示：
+```c
+#define SYSCALL_KILL_MYSELF         0
+#define SYSCALL_GET_MTIME           1
+#define SYSCALL_JUST_YIELD          2
+#define SYSCALL_GET_MSCRATCH        3
+#define SYSCALL_SEMAPHORE_WAIT      4
+#define SYSCALL_SEMAPHORE_SIGNAL    5
+extern uint64_t user_syscall(uint64_t syscall_type);//call this function in user mode
+```
+```asm
+user_syscall:
+    addi    a7, a0, 0
+    ecall
+    ret
+```
+上面两段代码都是系统调用之前，还在user模式下。下面这段代码就是异常处理中对系统调用的处理。每一个case都是对应的系统调用类型。
+```c
+
+static void syscall_handler(struct context * syscall_context){
+	printf("syscall_code:%d\n\r", syscall_context -> a7);
+	switch (syscall_context -> a7) {
+	case SYSCALL_KILL_MYSELF :
+		#ifdef MYPRINT
+		printf("ask for kill itself\n\r");
+		#endif
+		task_num_sub();
+		syscall_context -> flags = 0;
+		newpriority();
+		w_mstatus_MPP(MSTATUS_MPP_MACHINE);
+		schedule();		
+		break;
+	case SYSCALL_GET_MTIME:
+		#ifdef MYPRINT
+		printf("ask for mtime\n\r");
+		#endif
+		syscall_context -> a0 = r_time();
+		break;
+	case SYSCALL_JUST_YIELD:
+		#ifdef MYPRINT
+		printf("ask for yield\n\r");
+		#endif
+		
+		w_mstatus_MPP(MSTATUS_MPP_MACHINE);
+		schedule();		
+		break;
+	case SYSCALL_GET_MSCRATCH:
+		#ifdef MYPRINT
+		printf("ask for mscratch:%p\n\r", r_mscratch());
+		#endif
+		syscall_context -> a0 = r_mscratch();
+		break;
+	default:
+		panic("UNKNOWN SYSCALL_CODE\n\r");
+		break;
+	}
+}
+
+```
+这时候就会发现：系统调用的功能和软中断几乎一样。那他们的区别在哪里呢？我问了chatgpt：
+- 软中断通常设计用于处理异步事件和任务调度，而不是频繁的系统调用。如果用软中断来实现系统调用，可能会导致以下性能问题：
+开销增加：软中断的处理机制通常比ecall更复杂，可能需要更多的处理时间和资源。
+响应时间：系统调用通常要求快速响应，而软中断可能会受到其他中断或调度延迟的影响，导致系统调用响应时间增加。
+- 安全性问题
+系统调用通常涉及用户态和内核态的切换，需要严格的权限控制和安全检查。使用软中断可能会引入安全漏洞：
+权限管理：软中断处理程序需要正确管理权限和安全上下文，否则可能导致特权级别提升的漏洞。
+输入验证：系统调用参数需要严格验证，软中断处理程序可能缺乏这方面的安全措施，容易引入错误和安全漏洞。
+- 复杂性问题
+系统调用机制已经在操作系统中被广泛优化和标准化，使用软中断实现系统调用会增加系统的复杂性：
+代码复杂性：使用软中断实现系统调用需要额外的代码来设置和处理中断，增加了系统代码的复杂性。
+维护成本：不同的软中断处理程序需要维护和调试，增加了操作系统维护的工作量。
+
+总之，我的出的结论是：上下文切换部分用软中断来完成，其他的只是进去一下获取寄存器的值，用系统调用来完成。
+
+当然还有一个区别：软中断只有S和M模式能调用。如果想要在U模式下访问M态，只能用系统调用。
+
+#### 通过系统调用实现一些新的功能
+
+##### 软件定时器的安全性问题（未完成）
+之前提到过，软件定时器会让用户写一段机器模式下执行的代码，会带来安全性的问题。想要解决之个问题，我们应该让即使其中段之后顺延一部分在user模式下执行的部分，然后再返回上下文，由此带来一个新的问题：如何让定时器中断能有一部分在`user`模式下执行呢？  
+想到的解决方案是：在`swtimer_check`函数中，判断需要执行的函数是用户的还是系统的。如果是系统的，就按照上文所述，执行完之后按照顺序`mret`就行。  
+那如果是`user`的函数，就切换权限并`mret`到一个新函数中，这个新函数会调用`func`函数，并在执行完之后返回原始函数。
+
+新的问题：调用`func`函数的栈在哪儿？我想了想，也许可以借用原始函数的上下文。应该可以，执行完之后不保存，返回原函数后还是原来的上下文。  
+- 问了一下`chatgpt`，其实中断的栈本身就有很多中处理方法。GROL-OS中trap用的是上下文本身的栈-因为我们在调用handler函数的时候并没有改变sp值。最后load上下文或者switch的时候会自动抹掉这部分栈。有的会专门给上下文开一个栈。应该阿也很简单，只要在保存上下文之后给sp赋值一下就行。现在暂时也没必要。
+
+第二个问题：新函数如何返回原始函数。这块应该需要写一个`user`切换到`user`上下文的`switch_to`函数了。这一部分就是之前协作式多任务的`switch_to`
+
+最后一个问题：如何判断一个函数是否是机器状态下执行的。我想了想，也许可以构建一个函数白名单，里面有上下文切换这类的函数。这些函数在机器模式下执行，其他的在用户模式下执行。还是这个办法最简单。
+
+但是这个方案还是不行。从user模式跳转到原始上下文，在汇编下是实现不了的。因为如果要跳转到原始的上下文，我们就需要让某个寄存器保存原始上下文的地址。但是我们加载上下文后，所有的寄存器都满了，没地方塞这个地址。我尝试了好几次后失败了，但是代码的接口还在。可以参考`src/timer.h`中`timer_check()`中的ifelse语句
+```c
+  if (_swtimer[i].func == schedule){
+    #ifdef MYPRINT
+    printf("swtimer call machine func!!!\n\r");
+    #endif
+    w_mstatus_MPP(MSTATUS_MPP_MACHINE);
+    _swtimer[i].func(_swtimer[i].arg);
+  }
+  else{
+    #ifdef MYPRINT
+    printf("swtimer call user func!!!\n\r");
+    #endif
+    w_mstatus_MPP(MSTATUS_MPP_USER);
+    swtimer_user_first_stage(_swtimer[i].func, _swtimer[i].arg);
+
+  }
+```
+else中的`swtimer_user_fist_stage`函数在`src/asm/swtimer.S`中。反正最后是跑不起来。我不管了。
+
+另：课程群中有同学这么解释，说这个安全性问题不用在意：
+- M/U模式一般都是嵌入式使用的，嵌入式一般程序和GUI固定的，不需要考虑安全性，因为用户接触不到系统调用、编码啥的。一般用户只能操作GUI(比如:自动贩卖机)非要解决的话，U态运行+PMP。当然这只是相对来说安全些
+- 除非支持M/S/U三模式和分页。这样用户没办法操作具体物理内存和定时器相关寄存器了
+
+在这里感谢`@Mo Huacong`的帮忙。
+
+![主页](/mdpic/7.jpg)
+
+再立个flag，这个项目到最后需要实现三模式以及分页。
+
+##### 锁的优化
+回顾一下上一章中锁的实现：
+```c
+struct mutex{
+  bool available;
+};//defination of mutex
+
+void acquire(){
+  while (!available)
+    switch_to(anotherTask);
+  available = false;
+}
+
+void release(){
+  available = true;
+  switch_to(anotherTask);
+}
+```
+再这种mutex的实现上，为了能够有限等待，我们加入了两个`switch_to`函数用于上下文切换。
+- `acquire`中的`switch_to`是为了避免没获得锁的任务只能忙转等待，浪费时间的情况。
+- `release`中的`switch_to`是为了避免有锁的任务一直占用着锁，导致其他任务无限等待的情况。
+
+但是这种实现方法也会带来问题：
+- 如果一个任务没有锁，`task_controller`每一轮都要判断一下有没有锁然后退出，任务切换是很大的开销。我们应该让等不到锁的任务直接退出`task_controller`的就绪队列，直到锁被释放出来，才执行这个任务。
+- 如果一个任务申请了锁，然后很快就释放了锁，那么这个就不得不让出自己的控制权（因为`release`中的`switch_to`）。这是很不公平的。但如果让他继续执行到再次获得这把锁，就对其他再等待这把锁的任务不公平了，没有实现有限等待。因此需要像一个办法，有满足有限等待，有要让`release`的时候不切换任务。
+
+因此我们提出了**信号量**
+
+信号量的软件实现如下所示：
+```c
+struct semaphore{
+  int value = 1;
+  struct process list[LIST_SIZE];
+};
+
+void wait(struct semaphore *S){
+  S->value--;
+  if (S->value <= 0){
+    add this process to S->list;
+    block_this_process();
+  }
+}
+
+void signal(struct semaphore *S){
+  S->value++;
+  if (S->value < 0){
+    remove the first process P from S->list;
+    wakeup_process(P);
+  }
+}
+//注意：这两段伪代码中，对S->value的++与判断都是原子操作，同时进行的。
+```
+信号量的实现可能没有mutex这么直观。但流程上和mutex区别还是不大的。`wait()`就是mutex中的`acquire()`，`signal()`就是mutex中的`release()`.难以理解的就是这个`value`到底是什么，建议还是盯着这两段代码在脑子里过一遍。不过信号量的学习中有一个抓手，就是**value如果是负数，那么他的绝对值就是正在等待这把锁的进程数目**。
+
+所以`wait`中对`S -> value`的--与判断的意思就是：如果我申请这把锁之后，这把锁就有大于一个进程在等待了，那么就说明我这个进程也是需要等待的。那么我就把自己放到这把锁的等待队列中去，然后把我这个进程`block`了，并切换到下个进程。直到这把锁该轮到我用了，不然`task_controller`是不会切换到我的。  
+所以`signal`中对`S -> value`的++与判断的意思就是：我释放了这把锁，如果这个时候还有进程在等着把锁，我就把第一个来排队的进程给解封了，并且把他从等待列表中移除。做完这些后并不用交出控制权，因为哪怕之后这个任务再次申请这把锁也申请不到。
+
+注意到这个`S -> list`是一个先进先出的队列。由于我没有实现malloc，所以依旧用数组的方式来维护他。由于需要有原子操作，因此这些代码需要用汇编来写。我写的时候de了两天bug，很折磨。这部分的汇编代码在`/src/asm/semaphore.S`中.
+```asm
+
+.global semaphore_wait
+.balign 4
+semaphore_wait:
+    addi                sp, sp, -40
+    sd                  ra, 8(sp)
+    sd                  s0, 0(sp)
+    addi                s0, sp, 40
+    //init
+    li                  a1, -1
+    amoadd.d.aq         a2, a1, (a0)   
+    bgt                 a2, x0, wait_exit 
+
+    addi                a0, a0, 8
+    sd                  a0, 16(sp)
+    li                  a0, 3               //SYSCALL_GET_MSCRATCH          csrr                a1, mscratch
+    call                user_syscall
+    addi                a1, a0, 0
+    ld                  a0, 16(sp)
+    ld                  a2, (a0)
+loop1:
+    beq                 a2, x0, fin_loop
+    addi                a0, a0, 8
+    ld                  a2, (a0)
+    j                   loop1
+fin_loop:
+    sd                  a1, (a0)            // add this process to S->list
+    li                  a0, 2
+    sd                  a0 , 264(a1)         //32*8+1 (uint64_t)&ctx_tasks[0].flags - (uint64_t)&ctx_tasks[0])
+                                            //set context->flag = CONTEXT_OUTOF_LIST
+    li                  a0, 2               //SYSCALL_JUST_YIELD
+    call                user_syscall
+wait_exit:
+    ld                  s0, 0(sp)
+    ld                  ra, 8(sp)
+    addi                sp, sp, 40
+    ret
+
+
+
+.global semaphore_signal
+.balign 4
+semaphore_signal:
+    addi                sp, sp, -24
+    sd                  ra, 8(sp)
+    sd                  s0, 0(sp)
+    addi                s0, sp, 24
+    //init
+
+    li                  a1, 1
+    amoadd.d.rl         a2, a1, (a0)
+    blt                 a2, x0, remove_process
+    j                   signal_exit
+remove_process:
+    addi                a0, a0, 8
+    ld                  a1, (a0)
+    sd                  a1, 16(sp)
+    call                fifo_pop    //remove a process from list
+    ld                  a1, 16(sp)
+    li                  a2, 1
+    sd                  a2 , 264(a1)         //33*8+ (uint64_t)&ctx_tasks[0].flags - (uint64_t)&ctx_tasks[0])
+                                            //set context->flag = CONTEXT_IN_LIST   wakeup
+
+ 
+signal_exit:
+    ld                  s0, 0(sp)
+    ld                  ra, 8(sp)
+    addi                sp, sp, 24
+    ret
+
+
+```
+
+
+写这部分汇编代码的时候需要注意：
+- struct的地址偏移问题。建议写的时候printf一下需要用的变量和struct头之间的偏移值。这个东西很玄学，应该取决于编译器怎么分配地址。我写的时候一会儿变量排的紧紧的，一会儿又有64位的对其。我懒得学，printf一下能解决所有问题。并且如果结构体最后的一个变量是个`uint8_t`，用`ld`命令修改他，会修改到他后面的变量。为了方便，建议所有变量都`uint64_t`
+- sp指针的问题。要修改函数栈大小的时候，一定要将函数头、函数尾的三个地方的函数栈大小修改一下。这个问题也很难debug。
+  
+  
+**TODO... uboot学习**
