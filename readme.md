@@ -1,4 +1,5 @@
 - [Glorious RISC-V On LicheePi - OS (GROL-OS)](#glorious-risc-v-on-licheepi---os-grol-os)
+  - [-1. 勘误](#-1-勘误)
   - [0. 前言](#0-前言)
     - [进度概览](#进度概览)
     - [前置知识](#前置知识)
@@ -97,6 +98,9 @@
 
 # Glorious RISC-V On LicheePi - OS (GROL-OS)
 
+## -1. 勘误
+写的时候有很多概念本身理解也有问题，写错了好多。毕竟我也刚学。欢迎大家在issue中批评指正。我会把错误的地方都放到[errata.md](/errata.md)中。
+
 ## 0. 前言
 
 这个项目记录了我学习操作系统的过程。记录的内容以硬件实现为主，内核的软件实现我没有写的很详细，如果有疑问可以移步[b站汪辰老师的慕课](https://www.bilibili.com/video/BV1Q5411w7z5/)。我将编写一个简单操作系统内核，让他在[LicheePi 4a](https://wiki.sipeed.com/hardware/zh/lichee/th1520/lp4a.html)上运行。ROM和uboot暂时用的是板卡emmc中自带的。
@@ -116,8 +120,8 @@
 ### 进度概览
 跟着[汪辰老师的慕课](https://www.bilibili.com/video/BV1Q5411w7z5/)走。
 
-2024.6.26第一次更新，到了第十四章同步任务和锁。
-2024.7.2 第二次更新，完成了汪老师的课程内容十六章
+- 2024.6.26第一次更新，到了第十四章同步任务和锁。  
+- 2024.7.2 第二次更新，完成了汪老师的课程内容十六章
 
 ### 前置知识
 
