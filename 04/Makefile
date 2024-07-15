@@ -15,4 +15,4 @@ SRCS_C = \
 MY_DIR = \
 	graphprint\
 
-include ../common.mk
+include ../common1.mk
